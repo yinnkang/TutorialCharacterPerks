@@ -1,0 +1,24 @@
+{
+  "ID": "com.modder.TutorialCharacterPerks",
+  "AssemblyName": "TutorialCharacterPerks.dll",
+  "Author": [
+    {
+      "Key": "English",
+      "Value": "PP Modding Community"
+    }
+  ],
+  "Version": "1.0",
+  "Name": [
+    {
+      "Key": "English",
+      "Value": "Tutorial Character Perks"
+    }
+  ],
+  "Description": [
+    {
+      "Key": "English",
+      "Value": "Allows assigning specific personal perks to tutorial characters Sophia Brown, Jacob Eber, Omar Ashour, Takeshi Sato, and Irina Sokolova. Configure individual perk sets for each character through mod configuration."
+    }
+  ],
+  "Dependencies": []
+}

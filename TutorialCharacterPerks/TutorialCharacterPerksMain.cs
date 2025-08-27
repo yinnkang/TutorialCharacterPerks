@@ -43,7 +43,8 @@ namespace TutorialCharacterPerks
 
         public override void OnModDisabled()
         {
-            Logger.LogInfo("[TutorialCharacterPerks] Disabled.");
+            TutorialCharacterPerkPatches.RestoreOriginalAbilities();
+            Logger.LogInfo("[TutorialCharacterPerks] Disabled and restored original abilities.");
             Main = null;
         }
 

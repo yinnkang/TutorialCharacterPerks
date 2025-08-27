@@ -9,6 +9,11 @@ using PhoenixPoint.Common.Game;
 using PhoenixPoint.Modding;
 using PhoenixPoint.Tactical.Entities;
 using PhoenixPoint.Tactical.Entities.Abilities;
+using PhoenixPoint.Geoscape.Entities;
+using PhoenixPoint.Common.Entities.Characters;
+using PhoenixPoint.Geoscape.Core;
+using PhoenixPoint.Geoscape.Levels;
+using HarmonyLib;
 
 namespace TutorialCharacterPerks
 {
@@ -19,118 +24,187 @@ namespace TutorialCharacterPerks
             return GameUtl.GameComponent<DefRepository>();
         }
         
-        // Tutorial character TacCharacterDef GUIDs from CustomStartingSquad reference
-        private static readonly Dictionary<string, string> TutorialCharacterGuids = new Dictionary<string, string>
+        // Store original abilities for restoration
+        private static readonly Dictionary<string, TacticalAbilityDef[]> OriginalCharacterAbilities = new Dictionary<string, TacticalAbilityDef[]>();
+        
+        // Tutorial character template names (from TacCharacterDef.Data.Name)
+        private static readonly HashSet<string> TutorialCharacterTemplateNames = new HashSet<string>
         {
-            { "Sophia", "400f644c-41f2-c534-1b99-34d48400b7f7" }, // PX_Sophia_Tutorial2_TacCharacterDef
-            { "Jacob", "2f7a41a8-d68a-3374-1a13-16f18425d7bb" }, // PX_Jacob_Tutorial2_TacCharacterDef
-            { "Omar", "8c9986d9-d875-e0e4-8978-578af6eba952" }, // PX_Omar_Tutorial3_TacCharacterDef
-            { "Takeshi", "d008b763-7eac-e7f4-e9c4-57eec8bb0c1e" }, // PX_Takeshi_Tutorial3_TacCharacterDef
-            { "Irina", "e3c06e40-0543-fa04-5a9d-7ff43410b1e0" } // PX_Irina_Tutorial3_TacCharacterDef
+            "KEY_TUT_ASSAULT_FEMALE",
+            "KEY_TUT_ASSAULT_MALE",
+            "KEY_TUT_HEAVY_MALE",
+            "KEY_TUT_ASSAULT3_MALE",
+            "KEY_TUT_SNIPER_FEMALE"
+        };
+        
+        // Mapping from template names to character names for config lookup
+        private static readonly Dictionary<string, string> TemplateNameToCharacterKey = new Dictionary<string, string>
+        {
+            { "KEY_TUT_ASSAULT_FEMALE", "Sophia" },
+            { "KEY_TUT_ASSAULT_MALE", "Jacob" },
+            { "KEY_TUT_HEAVY_MALE", "Omar" },
+            { "KEY_TUT_ASSAULT3_MALE", "Takeshi" },
+            { "KEY_TUT_SNIPER_FEMALE", "Irina" }
         };
 
-        // Perk name to definition name mapping (from SelectClassTraits)
-        private static readonly Dictionary<string, string> DisplayToDefNames = new Dictionary<string, string>
+        // Perk enum to definition name mapping
+        private static readonly Dictionary<TutorialCharacterPerksConfig.PerkType, string> PerkToDefNames = new Dictionary<TutorialCharacterPerksConfig.PerkType, string>
         {
-            { "RECKLESS", "Reckless_AbilityDef" },
-            { "THIEF", "Thief_AbilityDef" },
-            { "STRONGMAN", "Strongman_AbilityDef" },
-            { "RESOURCEFUL", "Resourceful_AbilityDef" },
-            { "TROOPER", "GoodShot_AbilityDef" },
-            { "CLOSE_QUARTERS_SPECIALIST", "CloseQuartersSpecialist_AbilityDef" },
-            { "CAUTIOUS", "Cautious_AbilityDef" },
-            { "BIOCHEMIST", "BioChemist_AbilityDef" },
-            { "HEALER", "Helpful_AbilityDef" },
-            { "QUARTERBACK", "Pitcher_AbilityDef" },
-            { "SELF_DEFENSE_SPECIALIST", "SelfDefenseSpecialist_AbilityDef" },
-            { "SNIPERIST", "Focused_AbilityDef" },
-            { "FARSIGHTED", "Brainiac_AbilityDef" },
-            { "BOMBARDIER", "Crafty_AbilityDef" }
+            { TutorialCharacterPerksConfig.PerkType.Reckless, "Reckless_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Thief, "Thief_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Strongman, "Strongman_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Resourceful, "Resourceful_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Trooper, "GoodShot_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.CloseQuarterSpecialist, "CloseQuartersSpecialist_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Cautious, "Cautious_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Biochemist, "BioChemist_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Healer, "Helpful_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Quarterback, "Pitcher_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.SelfDefenseSpecialist, "SelfDefenseSpecialist_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Sniperist, "Focused_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Farsighted, "Brainiac_AbilityDef" },
+            { TutorialCharacterPerksConfig.PerkType.Bombardier, "Crafty_AbilityDef" }
         };
 
+        /// <summary>
+        /// Patch character generation to assign specific personal abilities to tutorial characters
+        /// Following TFTV's approach exactly
+        /// </summary>
+        [HarmonyPatch(typeof(FactionCharacterGenerator), "GenerateUnit", new Type[] { typeof(GeoFaction), typeof(TacCharacterDef) })]
+        public static class GenerateUnit_TutorialCharacterPatch
+        {
+            private static void Postfix(ref GeoUnitDescriptor __result, GeoFaction faction, TacCharacterDef template)
+            {
+                try
+                {
+                    TutorialCharacterPerksMain.LogDebug($"GenerateUnit patch called for template: {template?.Data?.Name ?? "NULL"}");
+                    
+                    if (TutorialCharacterPerksMain.Main?.Config == null || __result?.Progression == null)
+                    {
+                        TutorialCharacterPerksMain.LogDebug($"Early return: Main={TutorialCharacterPerksMain.Main != null}, Config={TutorialCharacterPerksMain.Main?.Config != null}, Progression={__result?.Progression != null}");
+                        return;
+                    }
+                        
+                    var config = TutorialCharacterPerksMain.Main.Config;
+                    
+                    // Check if this is a tutorial character by template name
+                    string templateName = template.Data.Name;
+                    if (!TemplateNameToCharacterKey.TryGetValue(templateName, out string characterKey))
+                    {
+                        TutorialCharacterPerksMain.LogDebug($"Not a tutorial character: {templateName}");
+                        return;
+                    }
+                    
+                    TutorialCharacterPerksMain.LogDebug($"Processing tutorial character generation: {characterKey} ({templateName})");
+                    
+                    // Get configured perks for this character
+                    var configuredPerks = config.GetCharacterPerks(characterKey);
+                    TutorialCharacterPerksMain.LogDebug($"Found {configuredPerks.Count} configured perks for {characterKey}: {string.Join(", ", configuredPerks)}");
+                    
+                    if (configuredPerks.Count == 0)
+                    {
+                        TutorialCharacterPerksMain.LogDebug($"No perks configured for {characterKey}, using default generation");
+                        return;
+                    }
+                    
+                    var repo = GetRepo();
+                    var allAbilityDefs = repo.GetAllDefs<TacticalAbilityDef>();
+                    
+                    // Clear existing personal abilities and assign our configured ones
+                    // This follows TFTV's approach exactly: __result.Progression.PersonalAbilities[i] = tacticalAbilityDef;
+                    __result.Progression.PersonalAbilities.Clear();
+                    
+                    // Create a randomized list of levels 1-7 (indices 0-6)
+                    var availableLevels = new List<int> { 0, 1, 2, 3, 4, 5, 6 };
+                    var random = new System.Random();
+                    
+                    // Shuffle the levels using Fisher-Yates algorithm
+                    for (int i = availableLevels.Count - 1; i > 0; i--)
+                    {
+                        int j = random.Next(i + 1);
+                        (availableLevels[i], availableLevels[j]) = (availableLevels[j], availableLevels[i]);
+                    }
+                    
+                    for (int i = 0; i < configuredPerks.Count && i < 7; i++) // Max 7 personal abilities (0-6)
+                    {
+                        var perkType = configuredPerks[i];
+                        int levelIndex = availableLevels[i]; // Use randomized level
+                        
+                        if (PerkToDefNames.TryGetValue(perkType, out string defName))
+                        {
+                            var perkDef = allAbilityDefs.FirstOrDefault(d => d.name == defName);
+                            if (perkDef != null)
+                            {
+                                __result.Progression.PersonalAbilities[levelIndex] = perkDef;
+                                TutorialCharacterPerksMain.LogDebug($"  Set personal ability level {levelIndex + 1}: {perkDef.name} for {perkType}");
+                            }
+                            else
+                            {
+                                TutorialCharacterPerksMain.LogWarning($"Could not find perk definition: {defName} for {perkType}");
+                            }
+                        }
+                        else
+                        {
+                            TutorialCharacterPerksMain.LogWarning($"Unknown perk type: {perkType}");
+                        }
+                    }
+                    
+                    TutorialCharacterPerksMain.LogDebug($"Applied {__result.Progression.PersonalAbilities.Count} personal abilities to {characterKey}");
+                }
+                catch (Exception ex)
+                {
+                    TutorialCharacterPerksMain.LogError($"Error in GenerateUnit_TutorialCharacterPatch: {ex.Message}\n{ex.StackTrace}");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Apply Harmony patches for tutorial character perks
+        /// </summary>
         public static void ApplyTutorialCharacterPerks()
         {
             try
             {
-                var config = TutorialCharacterPerksMain.Main.Config;
-                TutorialCharacterPerksMain.Main.Logger.LogInfo($"Starting ApplyTutorialCharacterPerks - Config is {(config == null ? "null" : "available")}");
+                var harmony = new Harmony("TutorialCharacterPerks");
+                harmony.PatchAll();
+                TutorialCharacterPerksMain.Main.Logger.LogInfo("Applied Harmony patches for tutorial character personal abilities");
+            }
+            catch (Exception ex)
+            {
+                TutorialCharacterPerksMain.Main.Logger.LogError($"Error applying Harmony patches: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+        
+        /// <summary>
+        /// Restore original character abilities
+        /// </summary>
+        public static void RestoreOriginalAbilities()
+        {
+            try
+            {
+                var repo = GetRepo();
                 
-                foreach (var characterPair in TutorialCharacterGuids)
+                foreach (var kvp in TemplateNameToCharacterKey)
                 {
-                    string characterKey = characterPair.Key;
-                    string guid = characterPair.Value;
+                    string templateName = kvp.Key;
+                    string characterKey = kvp.Value;
                     
-                    var repo = GetRepo();
-                    TacCharacterDef tacCharDef = (TacCharacterDef)repo.GetDef(guid);
-                    if (tacCharDef == null) 
-                    {
-                        TutorialCharacterPerksMain.Main.Logger.LogWarning($"Could not find TacCharacterDef for {characterKey} (GUID: {guid})");
+                    if (!OriginalCharacterAbilities.ContainsKey(characterKey))
                         continue;
-                    }
-                    
-                    TutorialCharacterPerksMain.Main.Logger.LogInfo($"Found TacCharacterDef for {characterKey}, scanning config fields...");
-                    
-                    List<TacticalAbilityDef> newPerks = new List<TacticalAbilityDef>();
-                    int fieldsFound = 0;
-                    int fieldsEnabled = 0;
-                    
-                    foreach (FieldInfo field in config.GetType().GetFields())
+                        
+                    var tacCharDef = repo.GetAllDefs<TacCharacterDef>()
+                        .FirstOrDefault(t => t.Data.Name == templateName);
+                        
+                    if (tacCharDef != null)
                     {
-                        if (field.FieldType == typeof(bool) && field.Name.StartsWith($"{characterKey}_"))
-                        {
-                            fieldsFound++;
-                            bool isEnabled = (bool)field.GetValue(config);
-                            TutorialCharacterPerksMain.Main.Logger.LogInfo($"  Field {field.Name}: {isEnabled}");
-                            
-                            if (isEnabled)
-                            {
-                                fieldsEnabled++;
-                                string perkName = field.Name.Substring(characterKey.Length + 1); // Remove "CharacterName_" prefix
-                                TutorialCharacterPerksMain.Main.Logger.LogInfo($"  Perk name extracted: {perkName}");
-                                
-                                if (DisplayToDefNames.ContainsKey(perkName))
-                                {
-                                    string defName = DisplayToDefNames[perkName];
-                                    
-                                    // Search all defs by name (direct lookup doesn't work reliably)
-                                    var allDefs = repo.GetAllDefs<TacticalAbilityDef>();
-                                    var perkDef = allDefs.FirstOrDefault(d => d.name == defName);
-                                    
-                                    if (perkDef != null && !newPerks.Contains(perkDef))
-                                    {
-                                        newPerks.Add(perkDef);
-                                        TutorialCharacterPerksMain.Main.Logger.LogInfo($"  Added perk: {perkDef.name}");
-                                    }
-                                    else if (perkDef == null)
-                                    {
-                                        TutorialCharacterPerksMain.Main.Logger.LogWarning($"Could not find perk definition: {defName}");
-                                    }
-                                }
-                                else
-                                {
-                                    TutorialCharacterPerksMain.Main.Logger.LogWarning($"Unknown perk name: {perkName}");
-                                }
-                            }
-                        }
-                    }
-                    
-                    TutorialCharacterPerksMain.Main.Logger.LogInfo($"For {characterKey}: found {fieldsFound} config fields, {fieldsEnabled} enabled, {newPerks.Count} valid perks");
-                    
-                    if (newPerks.Count > 0)
-                    {
-                        // Replace the abilities in the character definition (following Officer Class pattern)
-                        tacCharDef.Data.Abilites = newPerks.ToArray();
-                        TutorialCharacterPerksMain.Main.Logger.LogInfo($"Applied {newPerks.Count} perks to {characterKey}: {string.Join(", ", newPerks.Select(p => p.name))}");
-                    }
-                    else
-                    {
-                        TutorialCharacterPerksMain.Main.Logger.LogInfo($"No perks configured for {characterKey}, leaving default perks");
+                        tacCharDef.Data.Abilites = OriginalCharacterAbilities[characterKey];
+                        TutorialCharacterPerksMain.LogDebug($"Restored original abilities for {characterKey}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                TutorialCharacterPerksMain.Main.Logger.LogError($"Error in ApplyTutorialCharacterPerks: {ex.Message}\n{ex.StackTrace}");
+                TutorialCharacterPerksMain.LogError($"Error restoring abilities: {ex.Message}");
             }
         }
     }
